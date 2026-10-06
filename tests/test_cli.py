@@ -133,3 +133,95 @@ darwin = pytest.mark.skipif(sys.platform != "darwin", reason="macOS only")
 def test_doctor_reports_the_volume(capsys, db):
     code, out = run(capsys, "--db", db, "doctor")
     assert code == 0 and "truly free" in out
+
+
+# ----------------------------------------------------- memory and security
+
+
+class FakeMemory:
+    """Enough of a Memory for the store and the report."""
+
+    def __init__(self, *, free=40, swap_used=0, swap_total=1 << 30, pressure="green"):
+        self.free_percent = free
+        self.swap_used = swap_used
+        self.swap_total = swap_total
+        self.compressed_bytes = 0
+        self.swapins = 0
+        self.pressure = pressure
+        self.processes = []
+
+
+def test_leaks_says_what_to_do_before_there_are_readings(capsys, db):
+    code, out = run(capsys, "--db", db, "leaks")
+    assert code == 1 and "strata watch" in out
+
+
+def test_leaks_reports_a_process_that_only_climbs(capsys, tmp_path):
+    import time
+
+    from strata.memory import Process
+
+    path = tmp_path / "h.db"
+    now = time.time()
+    with Store(path) as store:
+        for hour in range(8):
+            memory = FakeMemory()
+            memory.processes = [Process(name="Leaky", rss=(1 + hour) * GB, count=1)]
+            store.save_health(memory, None, taken=now - (8 - hour) * 3600)
+    code, out = run(capsys, "--db", str(path), "leaks", "7d")
+    assert code == 0 and "Leaky" in out
+
+
+def test_an_app_that_gives_memory_back_is_not_called_a_leak(capsys, tmp_path):
+    import time
+
+    from strata.memory import Process
+
+    path = tmp_path / "h.db"
+    now = time.time()
+    sizes = [1, 2, 3, 4, 1, 2, 3, 4]
+    with Store(path) as store:
+        for hour, value in enumerate(sizes):
+            memory = FakeMemory()
+            memory.processes = [Process(name="Chrome", rss=value * GB, count=1)]
+            store.save_health(memory, None, taken=now - (8 - hour) * 3600)
+    code, out = run(capsys, "--db", str(path), "leaks", "7d")
+    assert code == 0 and "nothing is growing" in out
+
+
+def test_health_answers_all_three(capsys, db):
+    code, out = run(capsys, "--db", db, "health")
+    assert code == 0
+    assert "DISK" in out and "MEMORY" in out and "PROTECTIONS" in out
+
+
+def test_memory_refuses_to_pretend_it_frees_anything(capsys, db):
+    code, out = run(capsys, "--db", db, "memory")
+    assert code == 0 and "does not free memory" in out
+
+
+def test_security_reports_the_first_reading_as_a_baseline(capsys, db):
+    code, out = run(capsys, "--db", db, "security")
+    assert code == 0 and "first reading" in out
+
+
+def test_security_notices_something_new(capsys, tmp_path, monkeypatch):
+    import strata.cli as cli
+
+    path = tmp_path / "h.db"
+    with Store(path) as store:
+        store.save_health(FakeMemory(), _Posture(["/a.plist"]))
+
+    monkeypatch.setattr(cli, "Store", Store)
+    import strata.security as security
+
+    monkeypatch.setattr(security, "persistence_items",
+                        lambda *a, **k: ["/a.plist", "/surprise.plist"])
+    code, out = run(capsys, "--db", str(path), "security")
+    assert code == 0 and "surprise.plist" in out and "NEW" in out
+
+
+class _Posture:
+    def __init__(self, persistence):
+        self.persistence = persistence
+        self.checks = []

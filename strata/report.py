@@ -173,3 +173,62 @@ def suggestions(entries: dict[str, int], *, limit: int = 8) -> list[str]:
     if not out:
         return ["  nothing here is safe to suggest removing"]
     return [f"  {paint(f'about {size(total)} is cache or build output', BOLD)}", "", *out]
+
+
+# ------------------------------------------------------------------ health
+
+
+def memory_lines(memory) -> list[str]:
+    """How the machine is coping. Never a "free this" button."""
+    tint = {"green": GREEN, "yellow": AMBER, "red": RED}[memory.pressure]
+    out = [
+        f"  memory pressure   {paint(memory.pressure.upper(), tint)}  {memory.verdict}",
+        f"  free              {memory.free_percent}%"
+        f"   {paint('(macOS keeps RAM full on purpose — this number is not the problem)', DIM)}",
+    ]
+    if memory.swap_total:
+        share = memory.swap_fraction
+        swap_tint = RED if share >= 0.75 else AMBER if share >= 0.4 else GREEN
+        amount = f"{size(memory.swap_used)} of {size(memory.swap_total)}"
+        out.append(f"  swap              {paint(amount, swap_tint)}  {share:.0%} full")
+    if memory.compressed_bytes:
+        out.append(f"  compressor        holding {size(memory.compressed_bytes)}")
+    return out
+
+
+def process_lines(processes, *, limit: int = 8) -> list[str]:
+    if not processes:
+        return ["  nothing to report"]
+    widest = processes[0].rss or 1
+    out = []
+    for process in processes[:limit]:
+        plural = f"{process.count} processes" if process.count > 1 else "1 process"
+        out.append(
+            f"  {process.name[:28]:<30} {bar(process.rss / widest, 16)} "
+            f"{size(process.rss):>9}  {paint(plural, DIM)}"
+        )
+    return out
+
+
+def growth_lines(found, *, limit: int = 6) -> list[str]:
+    if not found:
+        return [paint("  nothing is growing without giving memory back", DIM)]
+    out = []
+    for item in found[:limit]:
+        out.append(
+            f"  {paint(item.name[:28], BOLD):<30}  {size(item.rate)}/hour"
+            f"   {size(item.first)} → {size(item.last)}"
+            f"   {paint(f'over {item.readings} readings', DIM)}"
+        )
+    return out
+
+
+def posture_lines(posture) -> list[str]:
+    out = []
+    for check in posture.checks:
+        mark = "ok  " if check.ok else "FAIL"
+        tint = GREEN if check.ok else RED
+        out.append(f"  {paint(mark, tint)}  {check.name:<28} {check.detail}")
+        if not check.ok:
+            out.append(f"        {paint(check.why, DIM)}")
+    return out

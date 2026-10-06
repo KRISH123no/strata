@@ -2,22 +2,27 @@
 
 [![CI](https://github.com/KRISH123no/strata/actions/workflows/ci.yml/badge.svg)](https://github.com/KRISH123no/strata/actions/workflows/ci.yml)
 
-![a disk report: what is big, what changed this week, and what is only cache](assets/demo.svg)
+![one answer for disk, memory and the system protections](assets/health.svg)
 
-**Where the disk went, and what is still going.** macOS tells you "System Data: 47 GB" and stops.
-That is not a summary, it is a refusal. This takes a snapshot every night, and then answers the
-question you actually have — *what ate three gigabytes since Tuesday* — which no single listing can.
+![what changed this week, and what is only cache](assets/demo.svg)
 
-It never deletes anything. It prints the command and leaves it to you.
+**Why is this Mac unwell?** Three questions that are really one: the disk is full, the memory is
+full, and something might be running that should not be. macOS answers all three badly — "System
+Data: 47 GB", a memory figure that is always high and means nothing, and a security model you cannot
+see the state of.
+
+strata takes a snapshot, keeps the history, and answers from it. It never frees, cleans, deletes or
+quarantines anything. It prints the command and leaves it to you.
 
 ```bash
 pip install -e ".[dev]"
-strata demo            # see what it does, with no history of your own
+strata health          # disk, memory and protections, in one answer
 strata scan            # take the first snapshot
 strata install         # and one every night from now on
 
-strata since 7d        # the reason this exists
-strata now             # what is big right now
+strata since 7d        # what ate the disk — the reason this exists
+strata leaks           # what takes memory and never gives it back
+strata security        # what has started launching itself since last time
 strata safe            # what is only cache, and the command to clear it
 ```
 
@@ -41,6 +46,49 @@ $ strata since 7d
 
   at this rate the disk is full in 12 days — around 18 Oct
 ```
+
+## Memory: the honest version
+
+The commonest Mac complaint is "my RAM is always full", and the commonest product sold against it
+does not work. macOS fills idle memory with cache **on purpose** — pages holding recently-read files
+stay resident because reading them again is free, and the moment an app needs that memory the cache
+is dropped. A cleaner that "frees" RAM forces the system to throw away a cache it was using
+deliberately: the number rises and the next few minutes are slower. That is not a bad implementation
+of a good idea.
+
+So strata frees nothing. It measures the things that actually hurt — compression, swap, and the one
+question worth asking:
+
+```
+$ strata leaks
+  Leaky                 412.0 MB/hour   1.2 GB → 4.1 GB   over 9 readings
+```
+
+**A leak is a shape, not a size.** Two conditions, and both matter. A positive trend alone catches
+any app you happened to use more of — a browser climbs all afternoon and gives it all back when you
+close a tab. So it must also have **never meaningfully retreated**: the largest drawdown from its
+running peak stays near zero. That separates a leak from an afternoon without knowing anything about
+the application.
+
+Helpers are summed into the app they belong to. Forty rows of `Helper (Renderer)` is not an answer.
+
+## Security: an audit, not a scanner
+
+A third-party antivirus on a Mac usually adds a kernel extension, scans files the system already
+vets, and costs performance for it. Four protections ship with the machine, and the only honest
+question is whether they are on:
+
+```
+  ok    System Integrity Protection  enabled
+  ok    FileVault                    on
+  ok    Gatekeeper                   enabled
+  ok    XProtect                     version 5363
+```
+
+The second question is the one a scanner cannot answer and a history can: **what has started
+launching itself since last time?** Malware on macOS persists through the same launchd mechanism as
+everything else. strata does not judge whether a launch agent is good or bad — it reports what is
+new, which is the thing you can actually act on.
 
 ## Attribution is the hard part, not subtraction
 
@@ -91,7 +139,7 @@ suggesting the parent would be suggesting its children.
 ## What the tests check
 
 ```bash
-pytest -q      # 115 tests, under a second
+pytest -q      # 168 tests, under a second
 ruff check .
 ```
 
@@ -114,15 +162,19 @@ Bugs the suite caught:
 
 | File | Lines | Role |
 |---|---:|---|
-| `cli.py` | 367 | the commands and the nightly agent |
-| `report.py` | 175 | bars, sizes, and what is safe to say |
-| `walk.py` | 153 | sizing a tree, counting each file once |
+| `cli.py` | 555 | the commands and the nightly agent |
+| `report.py` | 234 | bars, sizes, and what is safe to say |
+| `memory.py` | 254 | pressure, swap, and the shape of a leak |
+| `walk.py` | 172 | sizing a tree, counting each file once |
 | `classify.py` | 111 | what a directory is, and whether to touch it |
-| `store.py` | 137 | the history, in one SQLite file |
+| `store.py` | 235 | the history, in one SQLite file |
+| `security.py` | 142 | the protections macOS has, and what is new |
 | `diff.py` | 148 | attribution and the forecast |
-| `demo.py` `volume.py` `model.py` | 238 | a pretend fortnight, the volume, the three types |
+| `demo.py` | 73 | a pretend fortnight |
+| `volume.py` | 98 | what the filesystem says about itself |
+| `model.py` | 67 | the three types |
 
-1,359 lines of implementation, 801 of tests.
+2,098 lines of implementation, 1,197 of tests.
 
 ## Not implemented
 

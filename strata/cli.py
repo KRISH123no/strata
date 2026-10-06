@@ -14,6 +14,7 @@ from . import __version__
 from .diff import NOISE, attribute, changes
 from .model import Snapshot
 from .report import (
+    AMBER,
     BOLD,
     DIM,
     biggest,
@@ -78,6 +79,11 @@ def cmd_scan(args) -> int:
     print(f"scanning {short(args.root, width=40)} …")
     snapshot = take(args.root, progress=True, private=args.private)
     store.save(snapshot)
+    # The nightly scan is also the nightly health reading.
+    from .memory import read as read_memory
+    from .security import audit
+
+    store.save_health(read_memory(), audit())
     print(
         f"  {snapshot.files:,} files, {size(snapshot.total)}, "
         f"{len(snapshot.entries):,} folders worth naming, "
@@ -86,6 +92,161 @@ def cmd_scan(args) -> int:
     if store.count() == 1:
         print(paint("\n  this is the first scan — run it again tomorrow and "
                     "`strata since yesterday` will have something to say.", DIM))
+    return 0
+
+
+def cmd_memory(args) -> int:
+    """How the machine is coping. Nothing here frees anything."""
+    from .memory import read
+    from .report import memory_lines, process_lines
+
+    store = Store(args.db)
+    memory = read()
+    if args.record:
+        from .security import audit
+
+        store.save_health(memory, audit())
+
+    print("\n".join(memory_lines(memory)))
+    print()
+    print("\n".join(process_lines(memory.processes, limit=args.limit)))
+    print()
+    print(paint("strata does not free memory. macOS fills RAM with cache on purpose, and "
+                "dropping it makes the next few minutes slower, not faster.", DIM))
+    return 0
+
+
+def cmd_leaks(args) -> int:
+    """Which application takes memory and never gives it back."""
+    from .memory import growth
+    from .report import growth_lines
+
+    store = Store(args.db)
+    series = store.process_series(since=_when(args.since))
+    if not series:
+        print("  no memory readings yet — run `strata watch` for a while, or "
+              "`strata memory --record` a few times")
+        return 1
+
+    readings = max((len(v) for v in series.values()), default=0)
+    print(f"{readings} readings of {len(series)} applications")
+    print()
+    print("\n".join(growth_lines(growth(series), limit=args.limit)))
+    print()
+    print(paint("growing and never retreating is a leak. growing and falling back is "
+                "an app you were using.", DIM))
+    return 0
+
+
+def cmd_security(args) -> int:
+    """Are the protections macOS already has switched on, and what is new?"""
+    from .report import posture_lines
+    from .security import appeared, audit, disappeared
+
+    store = Store(args.db)
+    posture = audit()
+    print("\n".join(posture_lines(posture)))
+
+    samples = store.health_samples()
+    before = store.persistence_at(samples[-1]) if samples else []
+    print()
+    print(f"  {len(posture.persistence)} things arrange to start themselves")
+
+    if before:
+        new = appeared(before, posture.persistence)
+        gone = disappeared(before, posture.persistence)
+        for path in new:
+            print(f"  {paint('NEW', AMBER)}   {short(path, width=58)}")
+        for path in gone:
+            print(f"  {paint('gone', DIM)}  {short(path, width=58)}")
+        if not new and not gone:
+            print(paint("  nothing has changed since the last reading", DIM))
+    else:
+        for path in posture.persistence[: args.limit]:
+            print(f"        {short(path, width=58)}")
+        print(paint("\n  this is the first reading — from now on strata reports what is new",
+                    DIM))
+
+    if args.record:
+        from .memory import read
+
+        store.save_health(read(), posture)
+    return 0
+
+
+def cmd_health(args) -> int:
+    """Storage, memory and the protections, in one answer."""
+    from .memory import read
+    from .report import memory_lines, posture_lines
+    from .security import audit
+
+    store = Store(args.db)
+    volume = inspect("/")
+    memory = read()
+    posture = audit()
+
+    print(paint("DISK", BOLD))
+    print("\n".join(volume_lines(volume)))
+    snapshot = store.latest()
+    if snapshot:
+        print(coverage_line(snapshot.total, volume))
+        if len(store.all()) > 1:
+            print(forecast_line(store.all()))
+    else:
+        print(paint("  no scan yet — run `strata scan`", DIM))
+
+    print()
+    print(paint("MEMORY", BOLD))
+    print("\n".join(memory_lines(memory)))
+
+    print()
+    print(paint("PROTECTIONS", BOLD))
+    print("\n".join(posture_lines(posture)))
+    if posture.ok:
+        print(paint("  every protection macOS ships with is on. a third-party antivirus "
+                    "would mostly add a kernel extension and cost you speed.", DIM))
+
+    if args.record:
+        store.save_health(memory, posture)
+    return 0
+
+
+def cmd_watch(args) -> int:
+    """Take a memory reading every few minutes, so a leak becomes visible.
+
+    A leak is only a shape over hours. One reading a night cannot see it.
+    """
+    import signal
+
+    from .memory import read
+    from .security import audit
+
+    store = Store(args.db)
+    running = [True]
+
+    def stop(_signum, _frame):
+        running[0] = False
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, stop)
+
+    taken = 0
+    print(f"reading every {args.interval:g}s — ctrl-c to stop")
+    while running[0]:
+        memory = read()
+        store.save_health(memory, audit() if taken % 12 == 0 else None)
+        taken += 1
+        if args.verbose:
+            biggest = memory.processes[0] if memory.processes else None
+            note = f"  {biggest.name[:20]} {size(biggest.rss)}" if biggest else ""
+            print(f"  {time.strftime('%H:%M:%S')}  {memory.pressure:<6}"
+                  f" swap {memory.swap_fraction:.0%}{note}", flush=True)
+        if args.limit and taken >= args.limit:
+            break
+        target = time.time() + args.interval
+        while running[0] and time.time() < target:
+            time.sleep(min(1.0, target - time.time()))
+    print(f"\n{taken} readings")
     return 0
 
 
@@ -344,6 +505,31 @@ def build_parser() -> argparse.ArgumentParser:
     safe = sub.add_parser("safe", help="what is only cache, with the command to clear it")
     safe.add_argument("--limit", type=int, default=8)
     safe.set_defaults(func=cmd_safe)
+
+    memory = sub.add_parser("memory", help="how the machine is coping (it never frees anything)")
+    memory.add_argument("--limit", type=int, default=8)
+    memory.add_argument("--record", action="store_true", help="store this reading")
+    memory.set_defaults(func=cmd_memory)
+
+    leaks = sub.add_parser("leaks", help="what takes memory and never gives it back")
+    leaks.add_argument("since", nargs="?", default="7d")
+    leaks.add_argument("--limit", type=int, default=6)
+    leaks.set_defaults(func=cmd_leaks)
+
+    security = sub.add_parser("security", help="the protections macOS already has, and what is new")
+    security.add_argument("--limit", type=int, default=12)
+    security.add_argument("--record", action="store_true")
+    security.set_defaults(func=cmd_security)
+
+    health = sub.add_parser("health", help="disk, memory and protections in one answer")
+    health.add_argument("--record", action="store_true")
+    health.set_defaults(func=cmd_health)
+
+    watch = sub.add_parser("watch", help="sample memory every few minutes, so leaks show up")
+    watch.add_argument("--interval", type=float, default=300.0)
+    watch.add_argument("--limit", type=int, help="stop after N readings")
+    watch.add_argument("-v", "--verbose", action="store_true")
+    watch.set_defaults(func=cmd_watch)
 
     sub.add_parser("history", help="free space over time").set_defaults(func=cmd_history)
     sub.add_parser("doctor", help="what this Mac reports about itself").set_defaults(func=cmd_doctor)

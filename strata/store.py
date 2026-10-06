@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .model import Snapshot
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS scans (
@@ -38,6 +38,43 @@ CREATE TABLE IF NOT EXISTS sizes (
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+-- How the machine was coping, not how full it looked.
+CREATE TABLE IF NOT EXISTS health (
+    id            INTEGER PRIMARY KEY,
+    taken         REAL NOT NULL,
+    free_percent  INTEGER NOT NULL DEFAULT 0,
+    swap_used     INTEGER NOT NULL DEFAULT 0,
+    swap_total    INTEGER NOT NULL DEFAULT 0,
+    compressor    INTEGER NOT NULL DEFAULT 0,
+    swapins       INTEGER NOT NULL DEFAULT 0,
+    pressure      TEXT NOT NULL DEFAULT 'green'
+);
+CREATE INDEX IF NOT EXISTS health_taken ON health(taken);
+
+-- Resident memory per application. The history that makes a leak visible.
+CREATE TABLE IF NOT EXISTS processes (
+    sample INTEGER NOT NULL REFERENCES health(id) ON DELETE CASCADE,
+    name   TEXT NOT NULL,
+    rss    INTEGER NOT NULL,
+    count  INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (sample, name)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS checks (
+    sample INTEGER NOT NULL REFERENCES health(id) ON DELETE CASCADE,
+    name   TEXT NOT NULL,
+    ok     INTEGER NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (sample, name)
+) WITHOUT ROWID;
+
+-- Everything that arranges to start itself, so a new one can be noticed.
+CREATE TABLE IF NOT EXISTS persistence (
+    sample INTEGER NOT NULL REFERENCES health(id) ON DELETE CASCADE,
+    path   TEXT NOT NULL,
+    PRIMARY KEY (sample, path)
+) WITHOUT ROWID;
 """
 
 
@@ -77,6 +114,66 @@ class Store:
             )
         snapshot.id = scan_id
         return scan_id
+
+    # -------------------------------------------------------------- health
+
+    def save_health(self, memory, posture, *, taken: float | None = None) -> int:
+        import time
+
+        when = taken if taken is not None else time.time()
+        with self.db:
+            cursor = self.db.execute(
+                "INSERT INTO health (taken, free_percent, swap_used, swap_total,"
+                " compressor, swapins, pressure) VALUES (?,?,?,?,?,?,?)",
+                (when, memory.free_percent, memory.swap_used, memory.swap_total,
+                 memory.compressed_bytes, memory.swapins, memory.pressure),
+            )
+            sample = int(cursor.lastrowid)
+            self.db.executemany(
+                "INSERT OR REPLACE INTO processes (sample, name, rss, count) VALUES (?,?,?,?)",
+                [(sample, p.name, p.rss, p.count) for p in memory.processes],
+            )
+            if posture is not None:
+                self.db.executemany(
+                    "INSERT OR REPLACE INTO checks (sample, name, ok, detail) VALUES (?,?,?,?)",
+                    [(sample, c.name, int(c.ok), c.detail) for c in posture.checks],
+                )
+                self.db.executemany(
+                    "INSERT OR REPLACE INTO persistence (sample, path) VALUES (?,?)",
+                    [(sample, path) for path in posture.persistence],
+                )
+        return sample
+
+    def health_history(self, *, limit: int = 200) -> list[sqlite3.Row]:
+        rows = self.db.execute(
+            "SELECT * FROM health ORDER BY taken DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return list(reversed(rows))
+
+    def process_series(self, *, since: float = 0.0) -> dict[str, list[tuple[float, int]]]:
+        """Each application's resident memory over time, for leak detection."""
+        series: dict[str, list[tuple[float, int]]] = {}
+        for row in self.db.execute(
+            "SELECT h.taken, p.name, p.rss FROM processes p"
+            " JOIN health h ON h.id = p.sample WHERE h.taken >= ? ORDER BY h.taken",
+            (since,),
+        ):
+            series.setdefault(row["name"], []).append((row["taken"], row["rss"]))
+        return series
+
+    def persistence_at(self, sample: int) -> list[str]:
+        return [
+            row["path"]
+            for row in self.db.execute(
+                "SELECT path FROM persistence WHERE sample = ? ORDER BY path", (sample,)
+            )
+        ]
+
+    def health_samples(self) -> list[int]:
+        return [r["id"] for r in self.db.execute("SELECT id FROM health ORDER BY taken")]
+
+    def health_count(self) -> int:
+        return int(self.db.execute("SELECT COUNT(*) FROM health").fetchone()[0])
 
     # ------------------------------------------------------------- reading
 
@@ -125,6 +222,7 @@ class Store:
         cutoff = (datetime.now() - timedelta(days=keep_days)).timestamp()
         with self.db:
             cursor = self.db.execute("DELETE FROM scans WHERE taken < ?", (cutoff,))
+            self.db.execute("DELETE FROM health WHERE taken < ?", (cutoff,))
         return cursor.rowcount
 
     def close(self) -> None:
