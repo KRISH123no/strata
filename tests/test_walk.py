@@ -111,3 +111,28 @@ def test_a_similar_prefix_is_not_a_child():
 def test_the_limit_is_respected():
     sizes = {"/h": 100} | {f"/h/{n}": 10 - n for n in range(9)}
     assert len(highlights(sizes, root="/h", limit=3)) == 3
+
+
+# ----------------------------------------------------- the private folders
+
+
+def test_documents_is_left_alone_by_default(tmp_path, monkeypatch):
+    """A nightly job must not ask for access to someone's documents."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tree(tmp_path, {"Documents/private.bin": BIG, "code/a.bin": 1000})
+    result = walk(str(tmp_path), floor=0)
+    assert result.total == 1000
+    assert str(tmp_path / "Documents") not in result.sizes
+
+
+def test_it_can_be_asked_for_explicitly(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tree(tmp_path, {"Documents/private.bin": 2000, "code/a.bin": 1000})
+    assert walk(str(tmp_path), floor=0, include_private=True).total == 3000
+
+
+def test_the_gated_folders_are_named(tmp_path, monkeypatch):
+    from strata.walk import private_paths
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert str(tmp_path / "Documents") in private_paths()

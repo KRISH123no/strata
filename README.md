@@ -91,7 +91,7 @@ suggesting the parent would be suggesting its children.
 ## What the tests check
 
 ```bash
-pytest -q      # 112 tests, under a second
+pytest -q      # 115 tests, under a second
 ruff check .
 ```
 
@@ -122,7 +122,7 @@ Bugs the suite caught:
 | `diff.py` | 148 | attribution and the forecast |
 | `demo.py` `volume.py` `model.py` | 238 | a pretend fortnight, the volume, the three types |
 
-1,338 lines of implementation, 776 of tests.
+1,359 lines of implementation, 801 of tests.
 
 ## Not implemented
 
@@ -132,6 +132,9 @@ Bugs the suite caught:
 - **It does not read what it cannot read.** System files outside your home folder need privileges
   this does not ask for, so a home-folder scan explains most of a personal Mac and never all of it.
   The coverage line says how much.
+- **`~/Documents` is skipped by default**, along with iCloud Drive and Messages. macOS puts them
+  behind a permission prompt, and a nightly job asking for access to your documents — every night,
+  forever, to produce a size figure — is not a trade worth making. `--private` opts back in.
 - **Snapshots are listed, not sized.** `tmutil` names them; working out what each one holds needs
   more than it will tell you.
 - **No live view.** It answers questions about the past, which is the thing nothing else does. For

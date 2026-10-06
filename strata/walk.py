@@ -39,6 +39,17 @@ MAX_DEPTH = 6
 #: the places a walk goes to die.
 SKIP = frozenset({"/dev", "/proc", "/sys", "/Volumes", "/net", "/System/Volumes/Data/home"})
 
+#: Folders macOS puts behind a permission prompt. Walking them makes the
+#: system ask the user to grant a background job access to their documents,
+#: every night, forever — for a size figure. A disk tool is not worth that
+#: trade, so they are left alone unless asked for by name.
+PRIVATE = ("Documents", "Library/Mobile Documents", "Library/Messages")
+
+
+def private_paths(home: str | None = None) -> set[str]:
+    base = os.path.expanduser(home or "~")
+    return {os.path.join(base, name) for name in PRIVATE}
+
 
 @dataclass(slots=True)
 class Walked:
@@ -55,11 +66,19 @@ def walk(
     floor: int = FLOOR,
     max_depth: int = MAX_DEPTH,
     skip: Iterable[str] = SKIP,
+    include_private: bool = False,
     on_dir: Callable[[str], None] | None = None,
 ) -> Walked:
-    """Size everything under ``root``, counting each file once."""
+    """Size everything under ``root``, counting each file once.
+
+    ``include_private`` opts back in to the folders macOS gates behind a
+    permission prompt. Off by default: a nightly job should not be asking for
+    access to someone's documents in order to measure them.
+    """
     root = os.path.abspath(os.path.expanduser(root))
     skip = {os.path.abspath(p) for p in skip}
+    if not include_private:
+        skip |= private_paths()
     seen: set[tuple[int, int]] = set()
     result = Walked(sizes={})
     base_depth = root.rstrip("/").count("/")

@@ -33,7 +33,7 @@ from .walk import walk
 LABEL = "com.strata.nightly"
 
 
-def take(root: str, *, progress: bool = False) -> Snapshot:
+def take(root: str, *, progress: bool = False, private: bool = False) -> Snapshot:
     seen = [0]
 
     def tick(_folder: str) -> None:
@@ -41,7 +41,7 @@ def take(root: str, *, progress: bool = False) -> Snapshot:
         if progress and seen[0] % 500 == 0 and sys.stdout.isatty():
             print(f"\r  {seen[0]:,} folders", end="", flush=True)
 
-    walked = walk(root, on_dir=tick)
+    walked = walk(root, include_private=private, on_dir=tick)
     if progress and sys.stdout.isatty():
         print("\r" + " " * 30, end="\r")
     volume = inspect("/")
@@ -76,7 +76,7 @@ def cmd_scan(args) -> int:
     store = Store(args.db)
     started = time.perf_counter()
     print(f"scanning {short(args.root, width=40)} …")
-    snapshot = take(args.root, progress=True)
+    snapshot = take(args.root, progress=True, private=args.private)
     store.save(snapshot)
     print(
         f"  {snapshot.files:,} files, {size(snapshot.total)}, "
@@ -323,6 +323,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     scan = sub.add_parser("scan", help="take a snapshot of where the space is")
     root_arg(scan)
+    scan.add_argument("--private", action="store_true",
+                      help="include Documents and other folders macOS gates (will prompt)")
     scan.set_defaults(func=cmd_scan)
 
     demo = sub.add_parser("demo", help="see what it does, with no history of your own")
