@@ -23,6 +23,7 @@ strata install         # and one every night from now on
 strata since 7d        # what ate the disk — the reason this exists
 strata leaks           # what takes memory and never gives it back
 strata security        # what has started launching itself since last time
+strata watch-install   # sample memory from login, so leaks become visible
 strata safe            # what is only cache, and the command to clear it
 ```
 
@@ -63,6 +64,10 @@ question worth asking:
 $ strata leaks
   Leaky                 412.0 MB/hour   1.2 GB → 4.1 GB   over 9 readings
 ```
+
+Leak detection needs readings over hours, so the sampler is a **separate agent** from the nightly
+scan: `strata watch-install` reads three counters every five minutes and never opens a file, which
+means unlike the disk scan it can never trigger a permission prompt.
 
 **A leak is a shape, not a size.** Two conditions, and both matter. A positive trend alone catches
 any app you happened to use more of — a browser climbs all afternoon and gives it all back when you
@@ -139,7 +144,7 @@ suggesting the parent would be suggesting its children.
 ## What the tests check
 
 ```bash
-pytest -q      # 168 tests, under a second
+pytest -q      # 174 tests, under a second
 ruff check .
 ```
 
@@ -162,7 +167,7 @@ Bugs the suite caught:
 
 | File | Lines | Role |
 |---|---:|---|
-| `cli.py` | 555 | the commands and the nightly agent |
+| `cli.py` | 637 | the commands and the nightly agent |
 | `report.py` | 234 | bars, sizes, and what is safe to say |
 | `memory.py` | 254 | pressure, swap, and the shape of a leak |
 | `walk.py` | 172 | sizing a tree, counting each file once |
@@ -174,7 +179,7 @@ Bugs the suite caught:
 | `volume.py` | 98 | what the filesystem says about itself |
 | `model.py` | 67 | the three types |
 
-2,098 lines of implementation, 1,197 of tests.
+2,180 lines of implementation, 1,243 of tests.
 
 ## Not implemented
 

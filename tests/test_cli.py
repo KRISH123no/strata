@@ -225,3 +225,49 @@ class _Posture:
     def __init__(self, persistence):
         self.persistence = persistence
         self.checks = []
+
+
+# ------------------------------------------------------ the memory sampler
+
+
+def test_the_sampler_is_a_separate_agent_from_the_nightly_scan():
+    """Different cadence, different risk: one walks the disk, one reads counters."""
+    from strata.cli import LABEL, WATCH_LABEL, build_watch_plist
+
+    assert WATCH_LABEL != LABEL
+    assert WATCH_LABEL in build_watch_plist()
+
+
+def test_the_sampler_runs_continuously_not_nightly():
+    from strata.cli import build_watch_plist
+
+    plist = build_watch_plist()
+    assert "KeepAlive" in plist and "StartCalendarInterval" not in plist
+
+
+def test_the_interval_is_carried_into_the_agent():
+    from strata.cli import build_watch_plist
+
+    assert "<string>120</string>" in build_watch_plist(interval=120)
+
+
+def test_the_sampler_is_told_where_the_package_lives():
+    from strata.cli import build_watch_plist
+
+    assert "<key>PYTHONPATH</key>" in build_watch_plist()
+
+
+def test_the_sampler_never_walks_the_disk():
+    """It must not be able to ask for Documents access."""
+    from strata.cli import build_watch_plist
+
+    plist = build_watch_plist()
+    assert "scan" not in plist and "--private" not in plist
+
+
+def test_installing_the_sampler_off_a_mac_says_why(capsys, monkeypatch):
+    import strata.cli as cli
+
+    monkeypatch.setattr(cli.sys, "platform", "linux")
+    code, out = run(capsys, "watch-install")
+    assert code == 1 and "macOS only" in out

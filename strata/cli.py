@@ -32,6 +32,10 @@ from .volume import inspect
 from .walk import walk
 
 LABEL = "com.strata.nightly"
+#: The memory sampler is a separate agent on purpose. The disk scan is a
+#: nightly job that walks the filesystem; this one reads three counters every
+#: few minutes and never opens a file. Different cadence, different risk.
+WATCH_LABEL = "com.strata.monitor"
 
 
 def take(root: str, *, progress: bool = False, private: bool = False) -> Snapshot:
@@ -413,6 +417,43 @@ def build_plist(*, python: str | None = None, root: str, hour: int = 3) -> str:
 """
 
 
+def watch_plist_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{WATCH_LABEL}.plist"
+
+
+def build_watch_plist(*, python: str | None = None, interval: float = 300.0) -> str:
+    """A long-running sampler, so a leak has enough readings to show as one.
+
+    It touches no files — vm_stat, ps and sysctl only — so unlike the nightly
+    scan it can never trigger a permission prompt.
+    """
+    python = python or sys.executable
+    log = Path.home() / ".strata" / "monitor.log"
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>{WATCH_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{python}</string>
+        <string>-m</string><string>strata</string><string>watch</string>
+        <string>--interval</string><string>{interval:g}</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict><key>PYTHONPATH</key><string>{package_root()}</string></dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ProcessType</key><string>Background</string>
+    <key>LowPriorityIO</key><true/>
+    <key>StandardErrorPath</key><string>{log}</string>
+    <key>StandardOutPath</key><string>{log}</string>
+</dict>
+</plist>
+"""
+
+
 def _launchctl(*args: str) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(["launchctl", *args], capture_output=True, text=True, check=False)
@@ -454,6 +495,41 @@ def cmd_install(args) -> int:
         _launchctl("load", "-w", str(path))
     print(f"installed {path}")
     print(f"a scan will run every night at {args.hour:02d}:17")
+    return 0
+
+
+def cmd_watch_install(args) -> int:
+    if sys.platform != "darwin":
+        print("the sampler runs through launchd, which is macOS only")
+        return 1
+    try:
+        check_agent_can_start(sys.executable)
+    except RuntimeError as error:
+        print(error)
+        return 1
+    path = watch_plist_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    (Path.home() / ".strata").mkdir(parents=True, exist_ok=True)
+    path.write_text(build_watch_plist(interval=args.interval), encoding="utf-8")
+    target = f"gui/{os.getuid()}"
+    _launchctl("bootout", f"{target}/{WATCH_LABEL}")
+    if _launchctl("bootstrap", target, str(path)).returncode != 0:
+        _launchctl("load", "-w", str(path))
+    print(f"installed {path}")
+    print(f"a memory reading every {args.interval:g}s — `strata leaks` in a few hours")
+    print(paint("  it reads three counters and never opens a file, so it cannot "
+                "trigger a permission prompt.", DIM))
+    return 0
+
+
+def cmd_watch_uninstall(args) -> int:
+    _launchctl("bootout", f"gui/{os.getuid()}/{WATCH_LABEL}")
+    path = watch_plist_path()
+    if path.exists():
+        path.unlink()
+        print("removed")
+        return 0
+    print("nothing installed")
     return 0
 
 
@@ -539,6 +615,12 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--hour", type=int, default=3)
     install.set_defaults(func=cmd_install)
 
+    wi = sub.add_parser("watch-install", help="sample memory continuously, from login")
+    wi.add_argument("--interval", type=float, default=300.0)
+    wi.set_defaults(func=cmd_watch_install)
+
+    sub.add_parser("watch-uninstall", help="stop sampling").set_defaults(
+        func=cmd_watch_uninstall)
     sub.add_parser("uninstall", help="stop scanning").set_defaults(func=cmd_uninstall)
     return parser
 
