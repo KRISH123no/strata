@@ -8,3 +8,7 @@ build/
 *.egg-info/
 *.db
 .DS_Store
+
+# coverage output, generated on demand
+.coverage
+coverage.xml
